@@ -175,6 +175,29 @@ class ParticleCollectionSOA(ParticleCollection):
         self._iterator = None
         self._riterator = None
 
+    def distribute_load(self, mpi_rank, mpi_size, mpi_comm, method):
+        global_data = {}
+        for v in self.ptype.variables:
+            buffer = mpi_comm.gather(self._data[v.name], root=0)
+            if(mpi_rank == 0):
+                global_data[v.name] = np.concatenate(buffer)
+            else:
+                global_data[v.name] = None
+        
+        if(mpi_rank == 0):
+            lat, lon = global_data['lat'], global_data['lon']
+            coords = np.vstack((lon, lat)).transpose()
+            if method == 'kmeans' and KMeans:
+                kmeans = KMeans(n_clusters=mpi_size, random_state=0).fit(coords)
+                self._pu_indicators = kmeans.labels_
+            else: 
+                logger.warn('Unsupported method "%s" ', method)
+        self._pu_indicators = mpi_comm.bcast(self._pu_indicators, root=0)
+        global_data = mpi_comm.bcast(global_data, root=0)
+
+        for v in self.ptype.variables:
+            self._data[v.name] = global_data[v.name][self._pu_indicators == mpi_rank]
+
     def __del__(self):
         """
         Collection - Destructor
@@ -852,6 +875,7 @@ class ParticleCollectionSOA(ParticleCollection):
         if not var_changed:
             raise SyntaxError('Could not change the write status of %s, because it is not a Variable name' % var)
 
+    
 
 class ParticleAccessorSOA(BaseParticleAccessor):
     """Wrapper that provides access to particle data in the collection,

@@ -20,6 +20,16 @@ from parcels.collection.collections import ParticleCollection
 from parcels.tools.loggers import logger
 from parcels.interaction.baseinteractionkernel import BaseInteractionKernel
 
+try:
+    from mpi4py import MPI
+except:
+    MPI = None
+if MPI:
+    try:
+        from sklearn.cluster import KMeans
+    except:
+        KMeans = None
+
 
 class NDCluster(ABC):
     """Interface."""
@@ -52,7 +62,8 @@ class BaseParticleSet(NDCluster):
         self.interaction_kernel = None
         self.fieldset = None
         self.time_origin = None
-
+        self.distribute_load_interval = None
+        
     def __del__(self):
         if self._collection is not None and isinstance(self._collection, ParticleCollection):
             del self._collection
@@ -340,6 +351,12 @@ class BaseParticleSet(NDCluster):
                 self.kernel.compile(compiler=GNUCompiler(cppargs=cppargs, incdirs=[path.join(get_package_dir(), 'include'), "."]))
                 self.kernel.load_lib()
 
+            if MPI:
+                mpi_comm = MPI.COMM_WORLD
+                mpi_rank = mpi_comm.Get_rank()
+                mpi_size = mpi_comm.Get_size()
+                if mpi_size > 1:
+                    self.distribute_load_interval = 100
         # Set up the interaction kernel(s) if not set and given.
         if self.interaction_kernel is None and pyfunc_inter is not None:
             if isinstance(pyfunc_inter, BaseInteractionKernel):
@@ -491,7 +508,18 @@ class BaseParticleSet(NDCluster):
             if abs(time - next_output) < tol:
                 if output_file:
                     output_file.write(self, time)
+
                 next_output += outputdt * np.sign(dt)
+
+            if MPI:
+                mpi_comm = MPI.COMM_WORLD
+                mpi_comm.barrier()
+                mpi_rank = mpi_comm.Get_rank()
+                mpi_size = mpi_comm.Get_size()
+                if(mpi_size > 1):
+                    if time % (self.distribute_load_interval * dt) == 0:
+                        self._collection.distribute_load(mpi_rank, mpi_size, mpi_comm, 'kmeans')
+                       
             if abs(time-next_movie) < tol:
                 self.show(field=movie_background_field, show_time=time, animation=True)
                 next_movie += moviedt * np.sign(dt)
